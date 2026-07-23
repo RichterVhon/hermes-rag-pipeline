@@ -1,0 +1,80 @@
+services:
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=litellm
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - hermes-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm
+    restart: unless-stopped
+    mem_limit: 1536m
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      - STORE_MODEL_IN_DB=False
+      - DISABLE_SPEND_LOGS=True
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    command: --config /app/config.yaml --port 4000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host-gateway:host-gateway"
+    networks:
+      - hermes-net
+    ports:
+      - "127.0.0.1:4000:4000"
+
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    volumes:
+      - ./data/hermes:/opt/data
+      - ./init-scripts/03-claude-code-symlinks:/etc/cont-init.d/03-claude-code-symlinks
+      - ./init-scripts/04-rag-deps:/etc/cont-init.d/04-rag-deps
+    env_file:
+      - .env
+    environment:
+      - OPENAI_API_BASE=http://litellm:4000
+      - OPENAI_API_KEY=no-key-required
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}
+      - HERMES_MODEL=default
+      - HERMES_PROVIDER=openai
+      - SIGNAL_HTTP_URL=${SIGNAL_HTTP_URL}
+      - SIGNAL_ACCOUNT=${SIGNAL_ACCOUNT}
+      - SIGNAL_ALLOWED_USERS=${SIGNAL_ALLOWED_USERS}
+    command: /opt/data/start.sh
+    depends_on:
+      - litellm
+    networks:
+      - hermes-net
+    ports:
+      - "127.0.0.1:9119:9119"
+      - "127.0.0.1:8080:8080"
+    extra_hosts:
+      - "host-gateway:host-gateway"
+networks:
+  hermes-net:
+    driver: bridge

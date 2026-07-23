@@ -1,0 +1,37 @@
+model_list:
+  - model_name: gemini
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gpt
+    litellm_params:
+      model: gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-5.5
+    litellm_params:
+      model: gpt-5.5
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-5-mini
+    litellm_params:
+      model: gpt-5-mini
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: embed-small
+    litellm_params:
+      model: text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-5.4-mini
+    litellm_params:
+      model: gpt-5.4-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Claude — uncomment when you have the key
+  # - model_name: default
+  #   litellm_params:
+  #     model: claude-sonnet-4-6
+  #     api_key: os.environ/ANTHROPIC_API_KEY
+
+general_settings:
+  disable_spend_logs: true
+  store_model_in_db: false

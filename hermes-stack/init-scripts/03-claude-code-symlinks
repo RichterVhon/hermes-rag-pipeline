@@ -1,0 +1,8 @@
+#!/command/with-contenv sh
+if [ -d /opt/data/bin/claude-versions ]; then
+  mkdir -p /root/.local/share/claude
+  ln -sf /opt/data/bin/claude-versions /root/.local/share/claude/versions
+  mkdir -p /root/.local/bin
+  LATEST=$(ls /opt/data/bin/claude-versions | sort -V | tail -1)
+  ln -sf /root/.local/share/claude/versions/$LATEST /root/.local/bin/claude
+fi
