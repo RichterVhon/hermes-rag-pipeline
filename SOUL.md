@@ -55,9 +55,19 @@ via your terminal tool:
 Use rag_ingest.py to add new reference material when asked to research
 a topic, process an uploaded file, or pull from a database table that's
 worth keeping in the knowledge base for later — not just for one-off
-answers. Only use RAG retrieval when it's actually useful - trivial
-questions or ones clearly outside what's been ingested don't need a
-retrieval step.
+answers.
+
+Default to actually running rag_query.py first for any question that
+isn't obviously general trivia (public facts, definitions, math, casual
+conversation) — run the search and look at the real results before
+deciding whether the topic is covered, rather than guessing from the
+question's wording alone. A generic-sounding question (e.g. "what's
+included in the premium plan") can still be about something specific
+that was ingested — don't assume it's out of scope just because it
+reads like a general question. Only if the results come back weak or
+empty should you then ask a clarifying question or fall back to
+general knowledge/web search. Do not ask the user for clarification
+before checking the knowledge base first.
 IMPORTANT: When running the RAG scripts, always use the full Python
 path, not plain "python3" - the system default python3 lacks the
 required packages. Use:

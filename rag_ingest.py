@@ -311,40 +311,87 @@ def ingest_wiki(topic):
     store(f'wikipedia:{topic}', chunks)
 
 def ingest_pdf(path):
-    from pypdf import PdfReader
-    reader = PdfReader(path)
+    # pdfplumber handles both text and table extraction. Tables are detected
+    # and pulled out separately (via chunk_structured, same treatment as docx
+    # tables) so their rows/columns don't get jumbled into the flat page text --
+    # pypdf had no concept of table structure at all, this was the "Still Open"
+    # gap noted in the summary doc.
+    import pdfplumber
     fname = os.path.basename(path)
     total = 0
     ocr_pages = 0
-    for page_num, page in enumerate(reader.pages, start=1):
-        try:
-            text = page.extract_text() or ''
-        except Exception as e:
-            print(f'  Page {page_num}: text extraction error: {e}')
-            text = ''
-        if not text.strip():
-            # No text layer -- likely a scanned page. Fall back to rendering
-            # the page as an image and running it through Tesseract OCR.
+    table_total = 0
+    tables_found = 0
+    with pdfplumber.open(path) as pdf:
+        for page_num, page in enumerate(pdf.pages, start=1):
             try:
-                from pdf2image import convert_from_path
-                import pytesseract
-                images = convert_from_path(path, first_page=page_num, last_page=page_num)
-                if images:
-                    text = pytesseract.image_to_string(images[0])
-                    if text.strip():
-                        ocr_pages += 1
-                        print(f'  Page {page_num}: no text layer, OCR fallback succeeded')
+                tables = page.find_tables()
             except Exception as e:
-                print(f'  Page {page_num}: OCR fallback failed: {e}')
+                print(f'  Page {page_num}: table detection error: {e}')
+                tables = []
+            table_bboxes = [t.bbox for t in tables]
+
+            try:
+                if table_bboxes:
+                    def not_within_bboxes(obj, bboxes=table_bboxes):
+                        v_mid = (obj["top"] + obj["bottom"]) / 2
+                        h_mid = (obj["x0"] + obj["x1"]) / 2
+                        return not any(
+                            (h_mid >= x0) and (h_mid < x1) and (v_mid >= top) and (v_mid < bottom)
+                            for x0, top, x1, bottom in bboxes
+                        )
+                    text = page.filter(not_within_bboxes).extract_text() or ''
+                else:
+                    text = page.extract_text() or ''
+            except Exception as e:
+                print(f'  Page {page_num}: text extraction error: {e}')
                 text = ''
-        if not text.strip():
-            print(f'  Page {page_num}: no extractable text even after OCR, skipping')
-            continue
-        chunks = classify_and_chunk(text)
-        if chunks:
-            store(f'{fname}#page={page_num}', chunks)
-            total += len(chunks)
-    print(f'Done. {total} chunks stored from {fname} ({ocr_pages} pages used OCR fallback)')
+
+            if not text.strip():
+                # No text layer -- likely a scanned page. Fall back to rendering
+                # the page as an image and running it through Tesseract OCR.
+                try:
+                    from pdf2image import convert_from_path
+                    import pytesseract
+                    images = convert_from_path(path, first_page=page_num, last_page=page_num)
+                    if images:
+                        text = pytesseract.image_to_string(images[0])
+                        if text.strip():
+                            ocr_pages += 1
+                            print(f'  Page {page_num}: no text layer, OCR fallback succeeded')
+                except Exception as e:
+                    print(f'  Page {page_num}: OCR fallback failed: {e}')
+                    text = ''
+
+            if text.strip():
+                chunks = classify_and_chunk(text)
+                if chunks:
+                    store(f'{fname}#page={page_num}', chunks)
+                    total += len(chunks)
+            elif not table_bboxes:
+                print(f'  Page {page_num}: no extractable text even after OCR, skipping')
+
+            for t_idx, table in enumerate(tables, start=1):
+                try:
+                    rows = table.extract()
+                except Exception as e:
+                    print(f'  Page {page_num}, table {t_idx}: extraction error: {e}')
+                    continue
+                if not rows:
+                    continue
+                row_lines = [
+                    ' | '.join((cell or '').strip() for cell in row)
+                    for row in rows if any(cell and cell.strip() for cell in row)
+                ]
+                table_text = chr(10).join(row_lines)
+                if table_text.strip():
+                    t_chunks = chunk_structured(table_text)
+                    if t_chunks:
+                        store(f'{fname}#page={page_num}#table={t_idx}', t_chunks)
+                        table_total += len(t_chunks)
+                        tables_found += 1
+    print(f'Done. {total} chunks stored from {fname} ({ocr_pages} pages used OCR fallback, '
+          f'{tables_found} tables found producing {table_total} additional chunks)')
 
 def ingest_docx(path):
     import docx

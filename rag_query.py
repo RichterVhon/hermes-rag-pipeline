@@ -63,7 +63,42 @@ else:
         (question_vector, CANDIDATE_POOL_SIZE)
     )
 candidates = cur.fetchall()
-results = rerank(question, candidates) if candidates else []
+
+# Hybrid search: also run a keyword (full-text) search alongside the vector
+# search above, so exact terms (names, IDs, dates) that embeddings sometimes
+# fuzzy-match aren't missed. Results are merged and deduped before reranking.
+KEYWORD_POOL_SIZE = 15
+keyword_candidates = []
+try:
+    if source_filter:
+        cur.execute(
+            "SELECT content, source, ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) AS rank "
+            "FROM rag_chunks WHERE source ILIKE %s AND to_tsvector('english', content) @@ plainto_tsquery('english', %s) "
+            "ORDER BY rank DESC LIMIT %s",
+            (question, f'%{source_filter}%', question, KEYWORD_POOL_SIZE)
+        )
+    else:
+        cur.execute(
+            "SELECT content, source, ts_rank(to_tsvector('english', content), plainto_tsquery('english', %s)) AS rank "
+            "FROM rag_chunks WHERE to_tsvector('english', content) @@ plainto_tsquery('english', %s) "
+            "ORDER BY rank DESC LIMIT %s",
+            (question, question, KEYWORD_POOL_SIZE)
+        )
+    # Negate rank so both candidate sources sort the same way (lower = better),
+    # matching the vector search's distance convention.
+    keyword_candidates = [(content, source, -rank) for content, source, rank in cur.fetchall()]
+except Exception as e:
+    print(f"[keyword search failed ({e}), continuing with vector results only]", file=sys.stderr)
+
+seen = set()
+combined = []
+for content, source, score in list(candidates) + keyword_candidates:
+    key = (source, content)
+    if key not in seen:
+        seen.add(key)
+        combined.append((content, source, score))
+
+results = rerank(question, combined) if combined else []
 
 print(f'Question: {question}')
 print('---')
