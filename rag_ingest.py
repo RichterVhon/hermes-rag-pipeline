@@ -91,7 +91,7 @@ def chunk_email(text, max_chars=1000):
 
 NATURE_CATEGORIES = ["prose", "structured", "faq", "legal", "transcript", "procedural", "sectioned", "email"]
 
-CLASSIFY_PROMPT = """You classify a piece of text by its structural nature, not its file format.
+CLASSIFY_SYSTEM_PROMPT = """You classify a piece of text by its structural nature, not its file format.
 Respond with EXACTLY ONE WORD from this list, nothing else:
 
 prose - free-flowing paragraphs, narrative or descriptive writing, no strong internal structure (e.g. articles, essays, general documents)
@@ -104,21 +104,17 @@ sectioned - short headers each followed by related content (manuals, resumes, sp
 email - message content with quoted reply chains or "On [date] wrote:" boundaries
 none_of_these - does not clearly fit any of the above, including garbled text, corrupted encoding, random symbols, or non-linguistic noise that is not coherent human-readable content
 
-Important: only choose a category above none_of_these if the text is coherent, legible, human-readable content. If the text is symbolic noise, gibberish, or otherwise not real readable content, respond none_of_these even if it superficially resembles punctuation or formatting from another category (e.g. stray colons or brackets do not make noise "structured").
+Important: only choose a category above none_of_these if the text is coherent, legible, human-readable content. If the text is symbolic noise, gibberish, or otherwise not real readable content, respond none_of_these even if it superficially resembles punctuation or formatting from another category (e.g. stray colons or brackets do not make noise "structured")."""
 
-Text to classify:
----
-{text}
----
-
-One word answer:"""
-
-def classify_nature(text_sample, model="gpt-5-mini"):
-    prompt = CLASSIFY_PROMPT.format(text=text_sample[:2000])
+def classify_nature(text_sample, model="gpt-5-nano"):
+    user_msg = f"Text to classify:\n---\n{text_sample[:2000]}\n---\n\nOne word answer:"
     try:
         r = requests.post("http://litellm:4000/v1/chat/completions", json={
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
             "max_tokens": 500,
         }, timeout=30)
         raw = r.json()["choices"][0]["message"]["content"].strip().lower()
@@ -133,6 +129,49 @@ def classify_nature(text_sample, model="gpt-5-mini"):
             return cat
     print(f"classify_nature: unrecognized reply {raw!r}, defaulting to none_of_these")
     return "none_of_these"
+
+def fast_classify(text):
+    """
+    Cheap, regex-based pre-check for obviously-shaped content, so classify_nature()
+    (an AI call) only gets used when the shape genuinely isn't obvious. Deliberately
+    conservative: only returns a category when confident, otherwise returns None so
+    the caller falls through to the AI classifier. Does not attempt to detect prose,
+    structured, or sectioned -- those boundaries are too fuzzy for a cheap heuristic.
+    """
+    sample = text[:3000]
+    lines = [l for l in sample.split(chr(10)) if l.strip()]
+
+    faq_hits = sum(
+        1 for l in lines
+        if re.match(r"^\s*(Q:|Question:|A:|Answer:)", l, re.IGNORECASE) or l.strip().endswith("?")
+    )
+    if faq_hits >= 3:
+        return "faq"
+
+    legal_hits = len(re.findall(r"^\s*(?:Section\s+\d+|Article\s+\d+)\b", sample, re.MULTILINE))
+    if legal_hits >= 2:
+        return "legal"
+
+    procedural_hits = len(re.findall(r"^\s*(?:Step\s+\d+|\d+[.)]\s)", sample, re.MULTILINE))
+    if procedural_hits >= 3:
+        return "procedural"
+
+    has_email_headers = (
+        bool(re.search(r"^From:\s", sample, re.MULTILINE))
+        and bool(re.search(r"^(To|Subject):\s", sample, re.MULTILINE))
+    )
+    has_quote_marker = bool(re.search(r"^On .+ wrote:\s*$", sample, re.MULTILINE))
+    if has_email_headers or has_quote_marker:
+        return "email"
+
+    transcript_hits = len(re.findall(
+        r"^(?!(?:From|To|Cc|Bcc|Subject|Date|Reply-To|Product|Price|Stock|Category|Name|Amount|Total|Status|Type|Q|A|Question|Answer|ID):\s)[A-Z][A-Za-z .]{0,30}:\s",
+        sample, re.MULTILINE
+    ))
+    if transcript_hits >= 3:
+        return "transcript"
+
+    return None
 
 STRATEGY_PROMPT = """The following text does not fit any standard document structure category.
 Suggest a Python regular expression pattern that could be used with re.split(pattern, text, flags=re.MULTILINE)
@@ -149,7 +188,7 @@ Text:
 
 Regex pattern:"""
 
-def generate_chunk_pattern(text_sample, model="gpt-5-mini"):
+def generate_chunk_pattern(text_sample, model="gpt-5-nano"):
     prompt = STRATEGY_PROMPT.format(text=text_sample[:2000])
     try:
         r = requests.post("http://litellm:4000/v1/chat/completions", json={
@@ -228,8 +267,12 @@ def chunk_none_of_these(text, max_chars=1000):
     return chunk_text(text, max_chars=max_chars)
 
 def classify_and_chunk(text):
-    nature = classify_nature(text)
-    print(f"classify_and_chunk: classified as \'{nature}\'")
+    nature = fast_classify(text)
+    if nature:
+        print(f"classify_and_chunk: fast-classified as \'{nature}\' (no AI call needed)")
+    else:
+        nature = classify_nature(text)
+        print(f"classify_and_chunk: classified as \'{nature}\'")
     if nature in CHUNKER_DISPATCH:
         return CHUNKER_DISPATCH[nature](text)
     return chunk_none_of_these(text)
