@@ -278,16 +278,56 @@ def classify_and_chunk(text):
     return chunk_none_of_these(text)
 
 
+CONTEXT_SYSTEM_TEMPLATE = """You are given the full text of a document. Write a short 1-2 sentence context note (under 50 words) situating the following chunk within the document -- what section/topic it covers and what the document overall is about. Respond with ONLY the context note, no quotes, no repeating the chunk itself.
+
+Full document:
+---
+{doc}
+---"""
+
+def generate_chunk_context(doc_text, chunk, model="gpt-5-nano"):
+    # Contextual retrieval (Anthropic's technique): a short AI-written note is
+    # prepended to each chunk before embedding, so isolated chunks (a bare
+    # table row, a short paragraph) carry some of the surrounding document's
+    # meaning instead of standing completely alone. The document goes in the
+    # system message and only the chunk varies in the user message across
+    # repeated calls for the same document, so provider-side prompt caching
+    # can reduce the cost of contextualizing many chunks from one source.
+    system_msg = CONTEXT_SYSTEM_TEMPLATE.format(doc=doc_text[:6000])
+    user_msg = f"Chunk to contextualize:\n---\n{chunk[:1500]}\n---\n\nContext note:"
+    try:
+        r = requests.post("http://litellm:4000/v1/chat/completions", json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            "max_tokens": 1000,
+        }, timeout=30)
+        raw = r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"generate_chunk_context: call failed ({e}), storing chunk without context")
+        return None
+    if not raw:
+        print("generate_chunk_context: empty content from model, storing chunk without context")
+        return None
+    return raw
+
 def embed(text):
     r = requests.post('http://litellm:4000/v1/embeddings', json={'model': 'embed-small', 'input': text})
     return r.json()['data'][0]['embedding']
 
-def store(source, chunks):
+def store(source, chunks, doc_text=None):
     conn = psycopg2.connect(host='postgres', dbname='litellm', user='litellm', password=os.environ.get('POSTGRES_PASSWORD'))
     cur = conn.cursor()
     for i, chunk in enumerate(chunks):
-        vector = embed(chunk)
-        cur.execute('INSERT INTO rag_chunks (source, content, embedding) VALUES (%s, %s, %s)', (source, chunk, vector))
+        text_to_store = chunk
+        if doc_text:
+            context = generate_chunk_context(doc_text, chunk)
+            if context:
+                text_to_store = f'{context}\n\n{chunk}'
+        vector = embed(text_to_store)
+        cur.execute('INSERT INTO rag_chunks (source, content, embedding) VALUES (%s, %s, %s)', (source, text_to_store, vector))
         print(f'Stored chunk {i+1}/{len(chunks)} [{source}]')
     conn.commit()
     conn.close()
@@ -308,7 +348,7 @@ def ingest_wiki(topic):
     print(f'Fetched {len(raw_text)} characters')
     chunks = classify_and_chunk(raw_text)
     print(f'Created {len(chunks)} chunks')
-    store(f'wikipedia:{topic}', chunks)
+    store(f'wikipedia:{topic}', chunks, doc_text=raw_text)
 
 def ingest_pdf(path):
     # pdfplumber handles both text and table extraction. Tables are detected
@@ -366,7 +406,7 @@ def ingest_pdf(path):
             if text.strip():
                 chunks = classify_and_chunk(text)
                 if chunks:
-                    store(f'{fname}#page={page_num}', chunks)
+                    store(f'{fname}#page={page_num}', chunks, doc_text=text)
                     total += len(chunks)
             elif not table_bboxes:
                 print(f'  Page {page_num}: no extractable text even after OCR, skipping')
@@ -387,7 +427,7 @@ def ingest_pdf(path):
                 if table_text.strip():
                     t_chunks = chunk_structured(table_text)
                     if t_chunks:
-                        store(f'{fname}#page={page_num}#table={t_idx}', t_chunks)
+                        store(f'{fname}#page={page_num}#table={t_idx}', t_chunks, doc_text=(text + chr(10) + table_text) if text.strip() else table_text)
                         table_total += len(t_chunks)
                         tables_found += 1
     print(f'Done. {total} chunks stored from {fname} ({ocr_pages} pages used OCR fallback, '
@@ -400,7 +440,7 @@ def ingest_docx(path):
     full_text = chr(10).join(p.text for p in d.paragraphs)
     chunks = classify_and_chunk(full_text)
     if chunks:
-        store(fname, chunks)
+        store(fname, chunks, doc_text=full_text)
     table_rows = []
     for table in d.tables:
         for row in table.rows:
@@ -410,7 +450,7 @@ def ingest_docx(path):
     if table_rows:
         t_chunks = chunk_structured(chr(10).join(table_rows))
         if t_chunks:
-            store(f'{fname}#tables', t_chunks)
+            store(f'{fname}#tables', t_chunks, doc_text=full_text)
     print(f'Done processing {fname}')
 
 def ingest_pptx(path):
@@ -418,14 +458,17 @@ def ingest_pptx(path):
     prs = Presentation(path)
     fname = os.path.basename(path)
     total = 0
-    for slide_num, slide in enumerate(prs.slides, start=1):
+    slide_texts = []
+    for slide in prs.slides:
         texts = [shape.text_frame.text for shape in slide.shapes if shape.has_text_frame]
-        slide_text = chr(10).join(t for t in texts if t.strip())
+        slide_texts.append(chr(10).join(t for t in texts if t.strip()))
+    full_deck_text = chr(10).join(t for t in slide_texts if t.strip())
+    for slide_num, slide_text in enumerate(slide_texts, start=1):
         if not slide_text.strip():
             continue
         chunks = classify_and_chunk(slide_text)
         if chunks:
-            store(f'{fname}#slide={slide_num}', chunks)
+            store(f'{fname}#slide={slide_num}', chunks, doc_text=full_deck_text)
             total += len(chunks)
     print(f'Done. {total} chunks stored from {fname}')
 
@@ -434,7 +477,7 @@ def ingest_txt(path):
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         raw_text = f.read()
     chunks = classify_and_chunk(raw_text)
-    store(fname, chunks)
+    store(fname, chunks, doc_text=raw_text)
     print(f'Done. {len(chunks)} chunks stored from {fname}')
 
 def ingest_image(path):
@@ -452,7 +495,7 @@ def ingest_image(path):
         return
     chunks = chunk_structured(full_text)
     if chunks:
-        store(fname, chunks)
+        store(fname, chunks, doc_text=full_text)
     print(f'Done. {len(chunks)} chunks stored from {fname}')
 
 def ingest_file(path):
@@ -493,7 +536,8 @@ def ingest_db(query, column, label):
             continue
         chunks = classify_and_chunk(str(text))
         if chunks:
-            store(f'{label}#row={row_num}', chunks)
+            row_context = f"This is row {row_num} from a database table labeled '{label}'.\n\n{text}"
+            store(f'{label}#row={row_num}', chunks, doc_text=row_context)
             total += len(chunks)
     print(f'Done. {total} chunks stored from db:{label}')
 
@@ -549,7 +593,8 @@ def ingest_db_multi(query, label):
         row_text = chr(10).join(lines)
         chunks = chunk_structured(row_text)
         if chunks:
-            store(f'{label}#row={row_num}', chunks)
+            row_context = f"This is row {row_num} from a database table labeled '{label}', with columns: {', '.join(col_names)}.\n\n{row_text}"
+            store(f'{label}#row={row_num}', chunks, doc_text=row_context)
             total += len(chunks)
     print(f'Done. {total} chunks stored from db:{label}')
 

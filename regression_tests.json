@@ -1,0 +1,50 @@
+[
+  {
+    "id": "equipment_maintenance",
+    "question": "What equipment needs regular maintenance and what issues have been logged?",
+    "source_filter": "gym_equipment",
+    "expected_keywords": ["Treadmill", "belt", "Rowing", "Cable Crossover", "fraying"],
+    "not_expected_keywords": [],
+    "note": "Verified ground truth: 3 of 5 equipment rows have real reported issues (Treadmill, Rowing Machine, Cable Crossover)."
+  },
+  {
+    "id": "equipment_maintenance_excludes_healthy",
+    "question": "which gym equipment needs maintenance",
+    "source_filter": "gym_equipment",
+    "expected_keywords": ["Treadmill", "Rowing Machine", "Cable Crossover"],
+    "not_expected_keywords": ["Smith Machine", "Leg Press"],
+    "note": "Reranking should exclude Smith Machine and Leg Press, both logged as 'No issues reported'."
+  },
+  {
+    "id": "rowing_placard",
+    "question": "What does the rowing machine placard say about safety warnings?",
+    "source_filter": "rowing",
+    "expected_keywords": ["Strap feet", "back straight"],
+    "not_expected_keywords": [],
+    "note": "OCR'd placard text, verified against the real image ground truth."
+  },
+  {
+    "id": "dumbbell_placard",
+    "question": "What does the dumbbell rack placard say about organization?",
+    "source_filter": "dumbbell",
+    "expected_keywords": ["Return weights", "rack"],
+    "not_expected_keywords": [],
+    "note": "OCR'd placard text, verified against the real image ground truth."
+  },
+  {
+    "id": "staff_training_deck",
+    "question": "Where is the AED located and what radio channel does staff use?",
+    "source_filter": "staff-training",
+    "expected_keywords": ["AED", "channel 3"],
+    "not_expected_keywords": [],
+    "note": "Verified against staff-training-deck.pptx ground truth."
+  },
+  {
+    "id": "membership_pricing_exact",
+    "question": "how much is the premium membership plan",
+    "source_filter": "membership-pricing",
+    "expected_keywords": ["$79", "Premium"],
+    "not_expected_keywords": [],
+    "note": "Tests hybrid search + contextual retrieval on our synthetic test PDF's table."
+  }
+]
