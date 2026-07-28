@@ -3,6 +3,7 @@ import psycopg2
 import os
 import sys
 import re
+import json
 
 CANDIDATE_POOL_SIZE = 15
 FINAL_RESULT_CAP = 5
@@ -72,6 +73,43 @@ r = requests.post('http://litellm:4000/v1/embeddings', json={'model': 'embed-sma
 question_vector = r.json()['data'][0]['embedding']
 conn = psycopg2.connect(host='postgres', dbname='litellm', user='litellm', password=os.environ.get('POSTGRES_PASSWORD'))
 cur = conn.cursor()
+
+# Semantic cache: skip the full pipeline (vector search, keyword search, and
+# the rerank/quality AI call) if a near-duplicate question was already
+# answered recently. Threshold and TTL calibrated empirically -- paraphrases
+# of the same question measured ~0.18 cosine distance apart, genuinely
+# different questions ~0.83, so 0.25 leaves comfortable margin on both sides.
+# The TTL keeps cached answers from going stale if new data gets ingested.
+CACHE_SIMILARITY_THRESHOLD = 0.25
+CACHE_TTL_MINUTES = 60
+if source_filter:
+    cur.execute(
+        "SELECT question, quality, results, question_embedding <=> %s::vector AS distance FROM rag_query_cache "
+        "WHERE source_filter = %s AND created_at > now() - make_interval(mins => %s) "
+        "ORDER BY distance LIMIT 1",
+        (question_vector, source_filter, CACHE_TTL_MINUTES)
+    )
+else:
+    cur.execute(
+        "SELECT question, quality, results, question_embedding <=> %s::vector AS distance FROM rag_query_cache "
+        "WHERE source_filter IS NULL AND created_at > now() - make_interval(mins => %s) "
+        "ORDER BY distance LIMIT 1",
+        (question_vector, CACHE_TTL_MINUTES)
+    )
+cache_row = cur.fetchone()
+if cache_row and cache_row[3] is not None and cache_row[3] <= CACHE_SIMILARITY_THRESHOLD:
+    cached_question, cached_quality, cached_results, cache_distance = cache_row
+    print(f'Question: {question}')
+    print(f'[retrieval quality: {cached_quality}]')
+    print(f'[cache hit: matched "{cached_question}", distance {cache_distance:.4f}]')
+    print('---')
+    for content, source, distance in cached_results:
+        print(f'[source: {source}] [distance: {distance:.4f}]')
+        print(content)
+        print('---')
+    conn.close()
+    sys.exit(0)
+
 if source_filter:
     cur.execute(
         'SELECT content, source, embedding <-> %s::vector AS distance FROM rag_chunks WHERE source ILIKE %s ORDER BY distance LIMIT %s',
@@ -127,3 +165,13 @@ for content, source, distance in results:
     print(f'[source: {source}] [distance: {distance:.4f}]')
     print(content)
     print('---')
+
+results_json = json.dumps([[c, s, d] for c, s, d in results])
+cur.execute(
+    'INSERT INTO rag_query_cache (question, question_embedding, source_filter, quality, results) VALUES (%s, %s, %s, %s, %s::jsonb)',
+    (question, question_vector, source_filter, quality, results_json)
+)
+# Light housekeeping: drop cache rows old enough that no query could still
+# find them via the TTL filter above, so the table doesn't grow forever.
+cur.execute("DELETE FROM rag_query_cache WHERE created_at < now() - interval '24 hours'")
+conn.commit()
