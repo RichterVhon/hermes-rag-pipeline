@@ -14,11 +14,19 @@ Question: {question}
 Candidate passages:
 {candidates}
 
-Which of these passages are actually useful for answering the question above -- not just superficially similar in wording, but genuinely relevant? Respond with ONLY a comma-separated list of the candidate numbers that are relevant, ordered from most to least relevant (best first). Include at most 5 numbers. If none are relevant, respond with: NONE
+First, assess overall retrieval quality: does at least one passage genuinely and confidently answer the question -- not just superficially similar in wording, but actually relevant? Label it STRONG (at least one passage clearly and directly answers the question), WEAK (some related content exists but nothing confidently answers it), or NONE (nothing relevant at all).
 
-Answer:"""
+Then list the candidate numbers that are genuinely relevant, ordered from most to least relevant (best first), at most 5, comma-separated. If none are relevant, write NONE.
+
+Respond in EXACTLY this format, nothing else:
+QUALITY: <STRONG|WEAK|NONE>
+RELEVANT: <comma-separated numbers or NONE>"""
 
 def rerank(question, candidates, model="gpt-5-nano"):
+    # Lightweight groundedness/quality check (CRAG-style grading), combined
+    # into the same call as reranking to avoid a second AI round-trip. The
+    # quality label is an explicit signal Hermes can act on directly, instead
+    # of having to interpret raw distance numbers on its own.
     numbered = "\n\n".join(f"[{i+1}] (source: {c[1]})\n{c[0][:600]}" for i, c in enumerate(candidates))
     prompt = RERANK_PROMPT.format(question=question, candidates=numbered)
     try:
@@ -30,18 +38,30 @@ def rerank(question, candidates, model="gpt-5-nano"):
         raw = r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
         print(f"[reranker: call failed ({e}), falling back to plain similarity order]", file=sys.stderr)
-        return candidates[:FINAL_RESULT_CAP]
-    if not raw or raw.upper() == "NONE":
-        return []
+        return "WEAK", candidates[:FINAL_RESULT_CAP]
+
+    quality = "WEAK"  # cautious default if parsing fails
+    relevant_line = ""
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("QUALITY:"):
+            val = stripped.split(":", 1)[1].strip().upper()
+            if val in ("STRONG", "WEAK", "NONE"):
+                quality = val
+        elif stripped.upper().startswith("RELEVANT:"):
+            relevant_line = stripped.split(":", 1)[1].strip()
+
+    if not relevant_line or relevant_line.upper() == "NONE":
+        return quality, []
     indices = []
-    for part in re.findall(r'\d+', raw):
+    for part in re.findall(r'\d+', relevant_line):
         idx = int(part) - 1
         if 0 <= idx < len(candidates) and idx not in indices:
             indices.append(idx)
     if not indices:
         print("[reranker: unparseable response, falling back to plain similarity order]", file=sys.stderr)
-        return candidates[:FINAL_RESULT_CAP]
-    return [candidates[i] for i in indices[:FINAL_RESULT_CAP]]
+        return quality, candidates[:FINAL_RESULT_CAP]
+    return quality, [candidates[i] for i in indices[:FINAL_RESULT_CAP]]
 
 if len(sys.argv) < 2:
     print('Usage: python3 rag_query.py "question" [source_filter]')
@@ -98,9 +118,10 @@ for content, source, score in list(candidates) + keyword_candidates:
         seen.add(key)
         combined.append((content, source, score))
 
-results = rerank(question, combined) if combined else []
+quality, results = rerank(question, combined) if combined else ("NONE", [])
 
 print(f'Question: {question}')
+print(f'[retrieval quality: {quality}]')
 print('---')
 for content, source, distance in results:
     print(f'[source: {source}] [distance: {distance:.4f}]')

@@ -49,9 +49,12 @@ via your terminal tool:
   a question, regardless of which mode it was ingested with. Use this
   BEFORE falling back to a live web search when the question might
   already be covered by previously ingested material — it's faster
-  and free. If results come back weak or irrelevant (high distance
-  values, vague matches), fall back to web_search instead of forcing
-  an answer from poor matches.
+  and free. Each result set is labeled right after the question with
+  a retrieval quality flag: [retrieval quality: STRONG/WEAK/NONE].
+  STRONG means at least one passage confidently and directly answers
+  the question. Treat WEAK or NONE as insufficient evidence — don't
+  force an answer from it. Fall back to web_search, or say the
+  knowledge base doesn't cover it, instead.
 Use rag_ingest.py to add new reference material when asked to research
 a topic, process an uploaded file, or pull from a database table that's
 worth keeping in the knowledge base for later — not just for one-off
