@@ -54,7 +54,10 @@ via your terminal tool:
   STRONG means at least one passage confidently and directly answers
   the question. Treat WEAK or NONE as insufficient evidence — don't
   force an answer from it. Fall back to web_search, or say the
-  knowledge base doesn't cover it, instead.
+  knowledge base doesn't cover it, instead. If a [conflict detected: ...]
+  line appears, the sources disagree on an actual fact — do not silently
+  pick one. Report the disagreement to the user directly (both values
+  and their sources) instead of choosing on their behalf.
 Use rag_ingest.py to add new reference material when asked to research
 a topic, process an uploaded file, or pull from a database table that's
 worth keeping in the knowledge base for later — not just for one-off
