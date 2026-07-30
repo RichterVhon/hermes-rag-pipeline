@@ -22,9 +22,27 @@ was wrong.
 import json
 import subprocess
 import sys
+import os
+import psycopg2
 
 DEFAULT_TEST_FILE = "/opt/data/regression_tests.json"
 RAG_QUERY_PATH = "/opt/data/rag_query.py"
+
+
+def clear_query_cache():
+    # Regression tests must exercise the live pipeline, not a stale cached
+    # answer from an earlier run (semantic caching, added later, otherwise
+    # causes near-identical test questions to keep re-serving whatever
+    # result happened to get cached first -- masking real regressions or
+    # false-failing on stale results, as happened once during development).
+    try:
+        conn = psycopg2.connect(host='postgres', dbname='litellm', user='litellm', password=os.environ.get('POSTGRES_PASSWORD'))
+        cur = conn.cursor()
+        cur.execute("DELETE FROM rag_query_cache")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[warning: could not clear query cache before testing: {e}]")
 
 
 def run_query(question, source_filter=None):
@@ -38,6 +56,8 @@ def run_query(question, source_filter=None):
 def run_tests(test_file):
     with open(test_file) as f:
         tests = json.load(f)
+
+    clear_query_cache()
 
     passed, failed = 0, 0
     for test in tests:
@@ -59,6 +79,10 @@ def run_tests(test_file):
                 print(f"      found keywords that should be absent: {unwanted}")
             if test.get("note"):
                 print(f"      note: {test['note']}")
+            print(f"      --- raw output ---")
+            for line in output.splitlines():
+                print(f"      {line}")
+            print(f"      --- end raw output ---")
             failed += 1
 
     print("---")

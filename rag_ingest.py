@@ -317,7 +317,27 @@ def embed(text):
     r = requests.post('http://litellm:4000/v1/embeddings', json={'model': 'embed-small', 'input': text})
     return r.json()['data'][0]['embedding']
 
+CHUNK_OVERLAP_CHARS = 100
+
+def add_overlap(chunks):
+    """
+    Prepends a small tail of each chunk to the next one, so a fact that lands
+    right at a chunk boundary still appears intact in at least one chunk
+    instead of getting split in half across two. Applied once here, centrally,
+    rather than inside each individual chunking strategy -- every chunker
+    (prose, faq, legal, transcript, procedural, sectioned, structured, the
+    none_of_these fallback) benefits without needing its own logic for it.
+    """
+    if len(chunks) < 2:
+        return chunks
+    overlapped = [chunks[0]]
+    for i in range(1, len(chunks)):
+        prev_tail = chunks[i - 1][-CHUNK_OVERLAP_CHARS:]
+        overlapped.append(prev_tail + chr(10) + chunks[i])
+    return overlapped
+
 def store(source, chunks, doc_text=None):
+    chunks = add_overlap(chunks)
     conn = psycopg2.connect(host='postgres', dbname='litellm', user='litellm', password=os.environ.get('POSTGRES_PASSWORD'))
     cur = conn.cursor()
     for i, chunk in enumerate(chunks):

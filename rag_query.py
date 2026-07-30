@@ -26,7 +26,7 @@ QUALITY: <STRONG|WEAK|NONE>
 CONFLICT: <NO, or a brief description naming which candidates disagree>
 RELEVANT: <comma-separated numbers or NONE>"""
 
-def rerank(question, candidates, model="gpt-5-nano"):
+def rerank(question, candidates, model="gpt-5-mini"):
     # Lightweight groundedness/quality check (CRAG-style grading) plus a
     # conflict check, both combined into the same call as reranking to avoid
     # extra AI round-trips. The quality and conflict labels are explicit
